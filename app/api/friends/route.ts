@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { FriendshipStatus } from "@prisma/client";
+import { ConversationType, FriendshipStatus } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getSessionUserId } from "@/lib/session";
 import { jsonError } from "@/lib/http";
@@ -47,4 +47,70 @@ export async function GET() {
       to: r.friend,
     })),
   });
+}
+
+/** 删除好友关系，并删除双方之间的私聊会话（含消息）。 */
+export async function DELETE(req: Request) {
+  const userId = await getSessionUserId();
+  if (!userId) {
+    return jsonError("Unauthorized", 401);
+  }
+
+  let body: unknown;
+  try {
+    body = await req.json();
+  } catch {
+    return jsonError("Invalid JSON", 400);
+  }
+
+  const friendId =
+    typeof body === "object" &&
+    body !== null &&
+    "friendId" in body &&
+    typeof (body as { friendId: unknown }).friendId === "string"
+      ? (body as { friendId: string }).friendId.trim()
+      : "";
+
+  if (!friendId) {
+    return jsonError("friendId required", 400);
+  }
+  if (friendId === userId) {
+    return jsonError("Invalid friendId", 400);
+  }
+
+  const row = await prisma.friendship.findFirst({
+    where: {
+      status: FriendshipStatus.ACCEPTED,
+      OR: [
+        { userId, friendId },
+        { userId: friendId, friendId: userId },
+      ],
+    },
+  });
+
+  if (!row) {
+    return jsonError("Not friends", 404);
+  }
+
+  const directBetween = await prisma.conversation.findMany({
+    where: {
+      type: ConversationType.DIRECT,
+      AND: [
+        { members: { some: { userId } } },
+        { members: { some: { userId: friendId } } },
+      ],
+    },
+    select: { id: true },
+  });
+
+  await prisma.$transaction(async (tx) => {
+    if (directBetween.length > 0) {
+      await tx.conversation.deleteMany({
+        where: { id: { in: directBetween.map((c) => c.id) } },
+      });
+    }
+    await tx.friendship.delete({ where: { id: row.id } });
+  });
+
+  return NextResponse.json({ ok: true });
 }

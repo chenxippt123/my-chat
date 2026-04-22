@@ -90,6 +90,28 @@ export default function FriendsPage() {
     router.push(`/chat/${data.conversationId}`);
   }
 
+  async function removeFriend(friendId: string, username: string) {
+    if (
+      !window.confirm(
+        `Remove ${username} from friends? Your direct chat with them will be deleted.`,
+      )
+    ) {
+      return;
+    }
+    setError(null);
+    const res = await fetch("/api/friends", {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ friendId }),
+    });
+    const data = (await res.json()) as { error?: string };
+    if (!res.ok) {
+      setError(data.error ?? "Could not remove friend");
+      return;
+    }
+    await refresh();
+  }
+
   return (
     <main className="space-y-8">
       <section>
@@ -185,16 +207,25 @@ export default function FriendsPage() {
             {friends.map((f) => (
               <li
                 key={f.id}
-                className="flex items-center justify-between px-3 py-2 text-sm"
+                className="flex items-center justify-between gap-2 px-3 py-2 text-sm"
               >
                 <span>{f.user.username}</span>
-                <button
-                  type="button"
-                  className="rounded border border-zinc-300 px-2 py-1 text-xs hover:bg-zinc-50"
-                  onClick={() => void openDm(f.user.id)}
-                >
-                  Message
-                </button>
+                <div className="flex shrink-0 gap-2">
+                  <button
+                    type="button"
+                    className="rounded border border-zinc-300 px-2 py-1 text-xs hover:bg-zinc-50"
+                    onClick={() => void openDm(f.user.id)}
+                  >
+                    Message
+                  </button>
+                  <button
+                    type="button"
+                    className="rounded border border-red-200 px-2 py-1 text-xs text-red-700 hover:bg-red-50"
+                    onClick={() => void removeFriend(f.user.id, f.user.username)}
+                  >
+                    Remove
+                  </button>
+                </div>
               </li>
             ))}
           </ul>

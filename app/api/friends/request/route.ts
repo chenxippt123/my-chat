@@ -37,6 +37,35 @@ export async function POST(req: Request) {
     return jsonError("User not found", 404);
   }
 
+  if (target.isAssistant) {
+    const existingPair = await prisma.friendship.findFirst({
+      where: {
+        OR: [
+          { userId, friendId },
+          { userId: friendId, friendId: userId },
+        ],
+      },
+    });
+    if (existingPair?.status === FriendshipStatus.ACCEPTED) {
+      return jsonError("Already friends", 409);
+    }
+    if (existingPair) {
+      const updated = await prisma.friendship.update({
+        where: { id: existingPair.id },
+        data: { status: FriendshipStatus.ACCEPTED },
+      });
+      return NextResponse.json({ ok: true, id: updated.id });
+    }
+    const created = await prisma.friendship.create({
+      data: {
+        userId,
+        friendId,
+        status: FriendshipStatus.ACCEPTED,
+      },
+    });
+    return NextResponse.json({ ok: true, id: created.id });
+  }
+
   const existing = await prisma.friendship.findFirst({
     where: {
       OR: [

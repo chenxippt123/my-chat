@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { getSessionUserId } from "@/lib/session";
 import { jsonError } from "@/lib/http";
 import { emitNewMessage } from "@/lib/socket";
+import { scheduleAssistantReply } from "@/lib/assistant/reply";
 
 const postSchema = z.object({
   body: z.string().max(8000).optional().default(""),
@@ -118,6 +119,8 @@ export async function POST(
   };
 
   emitNewMessage(conversationId, out);
+
+  scheduleAssistantReply(conversationId);
 
   return NextResponse.json({ message: out });
 }

@@ -1,9 +1,18 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import { io } from "socket.io-client";
+import { MessageBody } from "@/components/MessageBody";
 
 type Sender = { id: string; username: string };
+
+type ConvMeta = {
+  type: "DIRECT" | "GROUP";
+  name: string | null;
+  assistantUsername: string;
+  members: { id: string; username: string }[];
+};
 
 export type ChatMessage = {
   id: string;
@@ -17,13 +26,21 @@ export type ChatMessage = {
 };
 
 export function ChatRoom({ conversationId }: { conversationId: string }) {
+  const router = useRouter();
   const [myUserId, setMyUserId] = useState<string | null>(null);
+  const [convMeta, setConvMeta] = useState<ConvMeta | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [text, setText] = useState("");
   const [uploading, setUploading] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const [mentionPick, setMentionPick] = useState<{
+    start: number;
+    filter: string;
+  } | null>(null);
+  const [dissolving, setDissolving] = useState(false);
 
   const appendIncoming = useCallback(
     (msg: ChatMessage) => {
@@ -35,17 +52,51 @@ export function ChatRoom({ conversationId }: { conversationId: string }) {
     [],
   );
 
+  const updateMentionFromCursor = useCallback(
+    (value: string, cursorPos: number) => {
+      if (convMeta?.type !== "GROUP") {
+        setMentionPick(null);
+        return;
+      }
+      const before = value.slice(0, cursorPos);
+      const at = before.lastIndexOf("@");
+      if (at === -1) {
+        setMentionPick(null);
+        return;
+      }
+      const prevChar = at > 0 ? before[at - 1] : "";
+      if (at > 0 && !/\s/.test(prevChar)) {
+        setMentionPick(null);
+        return;
+      }
+      const frag = before.slice(at + 1);
+      if (frag.includes(" ") || frag.includes("\n")) {
+        setMentionPick(null);
+        return;
+      }
+      setMentionPick({ start: at, filter: frag.toLowerCase() });
+    },
+    [convMeta?.type],
+  );
+
   useEffect(() => {
+    setConvMeta(null);
+    setMentionPick(null);
     let cancelled = false;
     void (async () => {
-      const [meRes, msgRes] = await Promise.all([
+      const [meRes, msgRes, convRes] = await Promise.all([
         fetch("/api/auth/me"),
         fetch(`/api/conversations/${conversationId}/messages?limit=50`),
+        fetch(`/api/conversations/${conversationId}`),
       ]);
       if (cancelled) return;
       if (meRes.ok) {
         const me = (await meRes.json()) as { user: { id: string } };
         setMyUserId(me.user.id);
+      }
+      if (convRes.ok) {
+        const c = (await convRes.json()) as ConvMeta;
+        setConvMeta(c);
       }
       if (msgRes.ok) {
         const data = (await msgRes.json()) as {
@@ -133,11 +184,34 @@ export function ChatRoom({ conversationId }: { conversationId: string }) {
     appendIncoming(data.message);
   }
 
+  function insertMention(username: string) {
+    const el = textareaRef.current;
+    if (!el || mentionPick === null) return;
+    const pos = el.selectionStart ?? text.length;
+    const before = text.slice(0, mentionPick.start);
+    const after = text.slice(pos);
+    const next = `${before}@${username} ${after}`;
+    setText(next);
+    setMentionPick(null);
+    queueMicrotask(() => {
+      el.focus();
+      const caret = before.length + username.length + 2;
+      el.setSelectionRange(caret, caret);
+    });
+  }
+
+  function onTextAreaChange(e: React.ChangeEvent<HTMLTextAreaElement>) {
+    const v = e.target.value;
+    setText(v);
+    updateMentionFromCursor(v, e.target.selectionStart ?? v.length);
+  }
+
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
     const trimmed = text.trim();
     if (!trimmed) return;
     setText("");
+    setMentionPick(null);
     await sendMessage({ body: trimmed });
   }
 
@@ -167,8 +241,49 @@ export function ChatRoom({ conversationId }: { conversationId: string }) {
     }
   }
 
+  async function dissolveGroup() {
+    if (!convMeta || convMeta.type !== "GROUP") return;
+    if (
+      !window.confirm(
+        "Dissolve this group? All members will lose access and messages will be deleted.",
+      )
+    ) {
+      return;
+    }
+    setDissolving(true);
+    try {
+      const res = await fetch(`/api/conversations/${conversationId}`, {
+        method: "DELETE",
+      });
+      const data = (await res.json()) as { error?: string };
+      if (!res.ok) {
+        window.alert(data.error ?? "Could not dissolve group");
+        return;
+      }
+      router.push("/chat");
+      router.refresh();
+    } finally {
+      setDissolving(false);
+    }
+  }
+
   return (
     <div className="flex min-h-0 flex-1 flex-col bg-white">
+      {convMeta?.type === "GROUP" ? (
+        <div className="flex shrink-0 items-center justify-between gap-2 border-b border-zinc-200 px-4 py-2">
+          <h2 className="truncate text-sm font-semibold text-zinc-900">
+            {convMeta.name ?? "Group"}
+          </h2>
+          <button
+            type="button"
+            disabled={dissolving}
+            onClick={() => void dissolveGroup()}
+            className="shrink-0 rounded border border-red-200 px-2 py-1 text-xs text-red-700 hover:bg-red-50 disabled:opacity-50"
+          >
+            {dissolving ? "…" : "Dissolve group"}
+          </button>
+        </div>
+      ) : null}
       <div className="flex-1 overflow-y-auto px-4 py-3">
         {nextCursor ? (
           <button
@@ -201,7 +316,7 @@ export function ChatRoom({ conversationId }: { conversationId: string }) {
                     </p>
                   ) : null}
                   {m.body ? (
-                    <p className="whitespace-pre-wrap break-words">{m.body}</p>
+                    <MessageBody body={m.body} mine={mine} />
                   ) : null}
                   {m.attachmentUrl ? (
                     <div className={m.body ? "mt-2" : ""}>
@@ -251,13 +366,69 @@ export function ChatRoom({ conversationId }: { conversationId: string }) {
           File
           <input type="file" className="hidden" onChange={(e) => void onFileChange(e)} />
         </label>
-        <textarea
-          className="min-h-[40px] flex-1 resize-none rounded-md border border-zinc-300 px-3 py-2 text-sm outline-none focus:border-blue-500"
-          rows={2}
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-          placeholder="Write a message…"
-        />
+        <div className="relative min-w-0 flex-1">
+          <textarea
+            ref={textareaRef}
+            className="min-h-[40px] w-full resize-none rounded-md border border-zinc-300 px-3 py-2 text-sm outline-none focus:border-blue-500"
+            rows={2}
+            value={text}
+            onChange={onTextAreaChange}
+            onSelect={() => {
+              const el = textareaRef.current;
+              if (!el) return;
+              updateMentionFromCursor(el.value, el.selectionStart ?? 0);
+            }}
+            onKeyUp={() => {
+              const el = textareaRef.current;
+              if (!el) return;
+              updateMentionFromCursor(el.value, el.selectionStart ?? 0);
+            }}
+            placeholder={(() => {
+              if (!convMeta) return "Write a message…";
+              if (convMeta.type === "GROUP") {
+                return `输入消息；@${convMeta.assistantUsername} 才会让助手回复。输入 @ 可选择成员。`;
+              }
+              const privateAssistant =
+                convMeta.members.length === 2 &&
+                convMeta.members.some(
+                  (m) =>
+                    m.username.toLowerCase() ===
+                    convMeta.assistantUsername.toLowerCase(),
+                );
+              return privateAssistant
+                ? "与助手私聊：可直接输入；也可 @ 助手。"
+                : `输入消息；@${convMeta.assistantUsername} 才会让助手回复（含与好友的会话）。`;
+            })()}
+          />
+          {mentionPick && convMeta ? (
+            <ul
+              className="absolute bottom-full left-0 z-10 mb-1 max-h-40 min-w-[10rem] overflow-y-auto rounded-md border border-zinc-200 bg-white py-1 text-sm shadow-lg"
+              role="listbox"
+            >
+              {convMeta.members
+                .filter((m) =>
+                  m.username.toLowerCase().startsWith(mentionPick.filter),
+                )
+                .map((m) => (
+                  <li key={m.id}>
+                    <button
+                      type="button"
+                      className="w-full px-3 py-1.5 text-left hover:bg-zinc-100"
+                      onMouseDown={(e) => e.preventDefault()}
+                      onClick={() => insertMention(m.username)}
+                    >
+                      @{m.username}
+                    </button>
+                  </li>
+                ))}
+              {convMeta.members.every(
+                (m) => !m.username.toLowerCase().startsWith(mentionPick.filter),
+              ) ? (
+                <li className="px-3 py-1.5 text-zinc-400">无匹配成员</li>
+              ) : null}
+            </ul>
+          ) : null}
+        </div>
         <button
           type="submit"
           disabled={uploading}

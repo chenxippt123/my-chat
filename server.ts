@@ -8,6 +8,7 @@ import { setSocketServer } from "./lib/socket";
 import { verifySessionToken } from "./lib/session";
 import { prisma } from "./lib/prisma";
 import { SESSION_COOKIE } from "./lib/constants";
+import { ensureAssistantUser } from "./lib/assistant/seed";
 
 const dev = process.env.NODE_ENV !== "production";
 /** Passed to Next (HMR / dev server metadata). */
@@ -28,7 +29,13 @@ const socketCorsOrigin =
         .map((s) => s.trim())
         .filter(Boolean);
 
-app.prepare().then(() => {
+app.prepare().then(async () => {
+  try {
+    await ensureAssistantUser();
+  } catch (e) {
+    console.warn("[my-chat] ensureAssistantUser failed (DB up? migrated?):", e);
+  }
+
   const httpServer = createServer((req, res) => {
     const parsedUrl = parse(req.url ?? "/", true);
     void handle(req, res, parsedUrl);

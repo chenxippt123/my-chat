@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { hashPassword } from "@/lib/password";
 import { signSessionToken, setSessionCookie } from "@/lib/session";
 import { jsonError } from "@/lib/http";
+import { isReservedUsername } from "@/lib/assistant/config";
 
 const schema = z.object({
   username: z.string().min(2).max(32).regex(/^[a-zA-Z0-9_]+$/),
@@ -25,6 +26,9 @@ export async function POST(req: Request) {
   }
 
   const { username, password, registrationCode } = parsed.data;
+  if (isReservedUsername(username)) {
+    return jsonError("This username is reserved", 400);
+  }
   const expected = process.env.REGISTRATION_CODE;
   if (!expected || registrationCode !== expected) {
     return jsonError("Invalid registration code", 403);
